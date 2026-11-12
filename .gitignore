@@ -1,0 +1,11 @@
+# ビルドの途中生成物
+bin/
+obj/
+.vs/
+*.user
+
+# DllExport.bat が NuGet から取得するもの(ビルド時に -action Restore で復元される)
+packages/
+
+# ローカルの AI ツール設定
+.claude/

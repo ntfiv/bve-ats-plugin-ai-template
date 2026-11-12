@@ -1,0 +1,102 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- BVE5 is a 32-bit process (needs an x86 DLL); BVE6 is 64-bit (needs an x64 DLL) and looks up
+         plugins via separate Ats32/Ats64 keys in Vehicle.txt, so the same vehicle can carry both
+         (there is no 32-bit BVE6).
+         .NET 8 Native AOT would cover x64 but not win-x86, so both platforms use the same classic
+         managed-DLL-with-native-exports trick instead: a plain .NET Framework class library, patched
+         at build time (via the DllExport package's post-build ildasm/ilasm step) to add real
+         unmanaged export table entries. The older UnmanagedExports (RGiesecke) package fails with a
+         "Version48" error on .NET Framework 4.8, so this project uses the maintained fork
+         (https://github.com/3F/DllExport), wired up via its DllExport.bat. -->
+    <TargetFramework>net48</TargetFramework>
+    <Platforms>x86;x64</Platforms>
+    <LangVersion>12.0</LangVersion>
+    <!-- The SDK's default portable PDB format isn't understood by DllExport's ilasm-based export
+         patching step (fails with "EXP0022: Possibly invalid PDB", silently producing an unpatched,
+         export-less DLL). Disable PDB generation entirely; AtsDebug.cs's file logger is this
+         plugin's diagnostic tool inside BVE anyway. -->
+    <DebugType>none</DebugType>
+    <RootNamespace>BveAtsPlugin</RootNamespace>
+  </PropertyGroup>
+  <!-- x86 build -> BveAtsPlugin.dll (BVE5, 32-bit). x64 build -> BveAtsPlugin64.dll
+       (BVE6's Ats64 key) - same naming convention as other dual-target BVE plugins. -->
+  <PropertyGroup Condition="'$(Platform)' == 'x64'">
+    <AssemblyName>BveAtsPlugin64</AssemblyName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Platform)' != 'x64'">
+    <PlatformTarget>x86</PlatformTarget>
+    <AssemblyName>BveAtsPlugin</AssemblyName>
+  </PropertyGroup>
+  <!-- External NuGet packages: add a PackageReference here, e.g.
+         <ItemGroup><PackageReference Include="NAudio" Version="2.2.1" /></ItemGroup>
+       It restores together with DllExport (Build-Check.ps1 passes /restore). The package's DLLs are copied to
+       bin\<Platform>\Release\net48\ (NOT into the x86\ / x64\ subfolders next to the patched plugin DLL), and
+       AtsExports.cs already resolves them from the plugin's own folder. See docs/KNOWHOW.md 4-2. -->
+  <PropertyGroup>
+    <!-- When copying this template for a new plugin: change DllExportNamespace to the new
+         namespace, and give the copy its own DllExportIdent (any new GUID). -->
+    <DllExportIdent>C001163F-E820-47FF-BBB8-99EB529164A3</DllExportIdent>
+    <DllExportMetaLibName>DllExport.dll</DllExportMetaLibName>
+    <DllExportNamespace>BveAtsPlugin</DllExportNamespace>
+    <DllExportDDNSCecil>true</DllExportDDNSCecil>
+    <DllExportSkipOnAnyCpu>false</DllExportSkipOnAnyCpu>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DllExportOrdinalsBase>1</DllExportOrdinalsBase>
+    <DllExportGenExpLib>false</DllExportGenExpLib>
+    <DllExportOurILAsm>false</DllExportOurILAsm>
+    <DllExportSysObjRebase>false</DllExportSysObjRebase>
+    <DllExportLeaveIntermediateFiles>false</DllExportLeaveIntermediateFiles>
+    <DllExportTimeout>30000</DllExportTimeout>
+    <DllExportPeCheck>6</DllExportPeCheck>
+    <DllExportPatches>0</DllExportPatches>
+    <DllExportRefreshObj>false</DllExportRefreshObj>
+    <DllExportILAsmExternAsm />
+    <DllExportILAsmTypeRef />
+    <DllExportTypeRefOptions>0</DllExportTypeRefOptions>
+    <DllExportRefPackages />
+    <DllExportPreProcType>0</DllExportPreProcType>
+    <DllExportPostProcType>0</DllExportPostProcType>
+    <DllExportDir>$(MSBuildProjectDirectory)\..\..\</DllExportDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="DllExport">
+      <Version>1.8.1</Version>
+      <Visible>false</Visible>
+      <Wz>1</Wz>
+    </PackageReference>
+  </ItemGroup>
+  <!-- DllExportCompileCheckShim.cs's stub [DllExport] attribute is only needed under `dotnet
+       build`; under a real (desktop MSBuild) build the DllExport package generates the actual
+       attribute into the same namespace, so exclude the stub there to avoid a collision. -->
+  <ItemGroup>
+    <Compile Remove="DllExportCompileCheckShim.cs" Condition="'$(MSBuildRuntimeType)' == 'Full'" />
+  </ItemGroup>
+  <!-- Only wired up under desktop MSBuild (Visual Studio / its MSBuild.exe) - `dotnet build` runs
+       on the cross-platform Core MSBuild, which cannot load this task at all and would hard-fail
+       the whole build. Under `dotnet build` this Condition makes the whole DllExport step a no-op,
+       so it still just produces a plain managed DLL with no real exports - fine for a quick compile
+       check, but build in Visual Studio (or its MSBuild.exe) to get the actual loadable plugin DLL.
+       Note: the DllExport.bat wizard regenerates this block on re-run (e.g. "Update"/"Restore"
+       actions) and will drop this Condition if it does - re-add it if that happens. -->
+  <ImportGroup Label=".NET DllExport" Condition="'$(MSBuildRuntimeType)' == 'Full'">
+    <Import Project="$(DllExportDir)packages\DllExport.1.8.1\tools\net.r_eg.DllExport.targets" Condition="Exists($([MSBuild]::Escape('$(DllExportDir)packages\DllExport.1.8.1\tools\net.r_eg.DllExport.targets')))" Label="8337224c9ad9e356" />
+  </ImportGroup>
+  <Target Name="DllExportRestorePkg" BeforeTargets="PrepareForBuild" Condition="'$(MSBuildRuntimeType)' == 'Full'">
+    <Error Condition="'$(DllExportNoRestore)'!='true' And !Exists('$(DllExportDir)DllExport.bat')" Text="DllExport.bat was not found in $(DllExportDir); https://github.com/3F/DllExport" />
+    <Exec Condition="'$(DllExportNoRestore)'!='true' And ('$(DllExportModImported)'!='true' Or !Exists('$(DllExportDir)packages\DllExport.1.8.1\tools\net.r_eg.DllExport.targets') Or !Exists('$(DllExportDir)packages\DllExport.1.8.1\gcache')) And Exists('$(DllExportDir)DllExport.bat')" Command=".\DllExport.bat  -action Restore" WorkingDirectory="$(DllExportDir)" />
+    <MSBuild Condition="'$(DllExportModImported)'!='true'" Projects="$(DllExportDir)packages\DllExport.1.8.1\tools\net.r_eg.DllExport.targets" Targets="DllExportMetaXBaseTarget" Properties="TargetFramework=$(TargetFramework)">
+      <Output TaskParameter="TargetOutputs" PropertyName="DllExportMetaXBase" />
+    </MSBuild>
+    <ItemGroup>
+      <Reference Include="DllExport, PublicKeyToken=8337224c9ad9e356">
+        <HintPath>$(DllExportDir)packages\DllExport.1.8.1\gcache\$(DllExportMetaXBase)\$(DllExportNamespace)\$(DllExportMetaLibName)</HintPath>
+        <Private>False</Private>
+        <SpecificVersion>False</SpecificVersion>
+      </Reference>
+    </ItemGroup>
+  </Target>
+  <Target Name="DllExportRPkgDynamicImport" BeforeTargets="PostBuildEvent" DependsOnTargets="GetFrameworkPaths" Condition="'$(MSBuildRuntimeType)' == 'Full' And '$(DllExportModImported)'!='true' And '$(DllExportRPkgDyn)'!='false'">
+    <MSBuild BuildInParallel="true" UseResultsCache="true" Projects="$(MSBuildProjectFullPath)" Properties="Configuration=$(Configuration);DllExportRPkgDyn=true" Targets="Build" />
+  </Target>
+</Project>
